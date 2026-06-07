@@ -1,0 +1,13 @@
+name: "finenav_terrain_map"
+version: "0.1.0"
+description: "Terrain Map Node for FineNav"
+maintainers:
+  - name: "fins"
+    email: "fins@sjtu.edu.cn"
+depends:
+  Eigen3: "3.4.0"
+  geometry_msgs: "system"
+  sensor_msgs: "system"
+
+licenses:
+  - "MPL-2.0"
