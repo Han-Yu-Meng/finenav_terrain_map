@@ -48,9 +48,18 @@ public:
     void initialize() override {
         logger->info("Initializing SimpleMapNode...");
 
-        map_size_ = 200;
-        resolution_ = 0.1f;
+        fins::ParamLoader config("SimpleMap");
+
+        map_size_ = config.get("map_size", 200);
+        resolution_ = config.get("resolution", 0.1f);
         grid_.resize(map_size_ * map_size_, 0);
+
+        l_half = config.get("l_half", 0.4f);
+        w_half = config.get("w_half", 0.35f);
+        robot_radius_ = config.get("robot_radius", 0.85f);
+
+        min_obstacle_height_ = config.get("min_obstacle_height", 0.1f);
+        max_obstacle_height_ = config.get("max_obstacle_height", 1.5f);
 
         origin_x_ = 0.0f;
         origin_y_ = 0.0f;
@@ -97,7 +106,7 @@ private:
             float ly = *iter_y;
             float lz = *iter_z;
 
-            if (lz < 0.1f || lz > 1.5f) {
+            if (lz < min_obstacle_height_ || lz > max_obstacle_height_) {
                 continue;
             }
 
@@ -139,7 +148,7 @@ private:
     }
 
     float handleGetRadius() {
-        return 0.85f;
+        return robot_radius_;
     }
 
     std::string handleGetBaseFrameID() {
@@ -209,8 +218,6 @@ private:
     }
 
     std::vector<std::pair<float, float>> getFootprintPoints(float x, float y, float theta) const {
-        const float l_half = 0.4f;
-        const float w_half = 0.35f;
         const std::array<std::pair<float, float>, 5> offsets = {{
             {0.0f, 0.0f},
             {l_half, w_half}, {l_half, -w_half},
@@ -247,6 +254,13 @@ private:
 
     bool is_tracking_unknown_{false};
     bool consider_footprint_{true};
+
+    float l_half = 0.4f;
+    float w_half = 0.35f;
+    float robot_radius_ = 0.85f;
+
+    double min_obstacle_height_ = 0.1f;
+    double max_obstacle_height_ = 1.5f;
 };
 
 EXPORT_NODE(SimpleMapNode)
