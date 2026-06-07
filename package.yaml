@@ -8,6 +8,7 @@ depends:
   Eigen3: "3.4.0"
   geometry_msgs: "system"
   sensor_msgs: "system"
+  nav_msgs: "system"
 
 licenses:
   - "MPL-2.0"

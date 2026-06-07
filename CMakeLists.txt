@@ -10,6 +10,7 @@ fins_add_node(${PROJECT_NAME}
 fins_link_ros_dependencies(${PROJECT_NAME}
   geometry_msgs
   sensor_msgs
+  nav_msgs
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE

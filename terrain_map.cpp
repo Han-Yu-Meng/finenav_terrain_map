@@ -13,6 +13,8 @@
 #include <fins/node.hpp>
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <nav_msgs/msg/odometry.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 
@@ -34,7 +36,9 @@ public:
 		set_category("FineNav>Map");
 
         register_input<sensor_msgs::msg::PointCloud2>("point_cloud", &SimpleMapNode::onPointCloud);
-        register_input<geometry_msgs::msg::PoseStamped>("robot_pose", &SimpleMapNode::onRobotPose);
+        register_input<nav_msgs::msg::Odometry>("odom", &SimpleMapNode::onOdometry);
+
+        register_output<nav_msgs::msg::OccupancyGrid>("map");
 
         register_server<bool(void)>("is_tracking_unknown", &SimpleMapNode::handleIsTrackingUnknown);
         register_server<bool(void)>("consider_footprint", &SimpleMapNode::handleConsiderFootprint);
@@ -80,9 +84,10 @@ public:
     }
 
 private:
-    void onRobotPose(const geometry_msgs::msg::PoseStamped& msg) {
+    void onOdometry(const nav_msgs::msg::Odometry& msg) {
         std::lock_guard<std::mutex> lock(map_mutex_);
-        latest_pose_ = msg;
+        latest_pose_.header = msg.header;
+        latest_pose_.pose = msg.pose.pose;
 
         origin_x_ = static_cast<float>(latest_pose_.pose.position.x);
         origin_y_ = static_cast<float>(latest_pose_.pose.position.y);
@@ -137,6 +142,31 @@ private:
                 }
             }
         }
+
+        publishMap();
+    }
+
+    void publishMap() {
+        nav_msgs::msg::OccupancyGrid map_msg;
+        // map_msg.header.stamp = rclcpp::Clock().now();
+        map_msg.header.frame_id = "map";
+
+        map_msg.info.resolution = resolution_;
+        map_msg.info.width = map_size_;
+        map_msg.info.height = map_size_;
+        map_msg.info.origin.position.x = origin_x_ - (map_size_ / 2) * resolution_;
+        map_msg.info.origin.position.y = origin_y_ - (map_size_ / 2) * resolution_;
+        map_msg.info.origin.position.z = 0.0;
+        map_msg.info.origin.orientation.w = 1.0;
+
+        map_msg.data.resize(grid_.size());
+        for (size_t i = 0; i < grid_.size(); ++i) {
+            if (grid_[i] == 0) map_msg.data[i] = 0;
+            else if (grid_[i] >= 253) map_msg.data[i] = 100;
+            else map_msg.data[i] = static_cast<int8_t>(grid_[i] * 100 / 254);
+        }
+
+        send("map", map_msg);
     }
 
     bool handleIsTrackingUnknown() {
