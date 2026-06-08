@@ -4,11 +4,13 @@
  * All rights reserved.
  *******************************************************************************/
 
+#include <shared_mutex>
 #include <mutex>
 #include <vector>
 #include <string>
 #include <algorithm>
 #include <cmath>
+#include <array>
 
 #include <fins/node.hpp>
 
@@ -31,9 +33,9 @@ public:
     virtual ~SimpleMapNode() = default;
 
     void define() override {
-		set_name("SimpleMapNode");
-		set_description("Self-contained lightweight 2D rolling grid map node");
-		set_category("FineNav>Map");
+        set_name("SimpleMapNode");
+        set_description("Self-contained lightweight 2D rolling grid map node");
+        set_category("FineNav>Map");
 
         register_input<sensor_msgs::msg::PointCloud2>("point_cloud", &SimpleMapNode::onPointCloud);
         register_input<nav_msgs::msg::Odometry>("odom", &SimpleMapNode::onOdometry);
@@ -68,6 +70,10 @@ public:
         origin_x_ = 0.0f;
         origin_y_ = 0.0f;
 
+        inv_resolution_ = 1.0f / resolution_;
+        map_half_size_ = map_size_ / 2;
+        max_range_ = static_cast<float>(map_half_size_) * resolution_;
+
         logger->info("SimpleMapNode initialized.");
     }
 
@@ -78,14 +84,14 @@ public:
     void pause() override {}
 
     void reset() override {
-        std::lock_guard<std::mutex> lock(map_mutex_);
+        std::unique_lock<std::shared_mutex> lock(map_mutex_);
         std::fill(grid_.begin(), grid_.end(), 0);
         logger->info("SimpleMapNode reset.");
     }
 
 private:
     void onOdometry(const nav_msgs::msg::Odometry& msg) {
-        std::lock_guard<std::mutex> lock(map_mutex_);
+        std::unique_lock<std::shared_mutex> lock(map_mutex_);
         latest_pose_.header = msg.header;
         latest_pose_.pose = msg.pose.pose;
 
@@ -94,7 +100,7 @@ private:
     }
 
     void onPointCloud(const sensor_msgs::msg::PointCloud2& msg) {
-        std::lock_guard<std::mutex> lock(map_mutex_);
+        std::unique_lock<std::shared_mutex> lock(map_mutex_);
 
         std::fill(grid_.begin(), grid_.end(), 0);
 
@@ -148,14 +154,13 @@ private:
 
     void publishMap() {
         nav_msgs::msg::OccupancyGrid map_msg;
-        // map_msg.header.stamp = rclcpp::Clock().now();
         map_msg.header.frame_id = "map";
 
         map_msg.info.resolution = resolution_;
         map_msg.info.width = map_size_;
         map_msg.info.height = map_size_;
-        map_msg.info.origin.position.x = origin_x_ - (map_size_ / 2) * resolution_;
-        map_msg.info.origin.position.y = origin_y_ - (map_size_ / 2) * resolution_;
+        map_msg.info.origin.position.x = origin_x_ - static_cast<float>(map_half_size_) * resolution_;
+        map_msg.info.origin.position.y = origin_y_ - static_cast<float>(map_half_size_) * resolution_;
         map_msg.info.origin.position.z = 0.0;
         map_msg.info.origin.orientation.w = 1.0;
 
@@ -186,7 +191,7 @@ private:
     }
 
     int handleGetCost(const Position3D& pos) {
-        std::lock_guard<std::mutex> lock(map_mutex_);
+        std::shared_lock<std::shared_mutex> lock(map_mutex_);
         float x = static_cast<float>(pos.x());
         float y = static_cast<float>(pos.y());
 
@@ -197,15 +202,15 @@ private:
     }
 
     bool handleIsCollision(float x, float y, float theta) {
-        std::lock_guard<std::mutex> lock(map_mutex_);
+        std::shared_lock<std::shared_mutex> lock(map_mutex_);
         return checkCollisionFootprint(x, y, theta);
     }
 
     float handleCostAtPose(float x, float y, float theta) {
-        std::lock_guard<std::mutex> lock(map_mutex_);
+        std::shared_lock<std::shared_mutex> lock(map_mutex_);
 
         int max_cost = 0;
-        auto pts = getFootprintPoints(x, y, theta);
+        const auto pts = getFootprintPoints(x, y, theta);
         for (const auto& pt : pts) {
             if (isInside(pt.first, pt.second)) {
                 int ix = getIndexX(pt.first);
@@ -219,20 +224,19 @@ private:
     inline bool isInside(float x, float y) const {
         float dx = x - origin_x_;
         float dy = y - origin_y_;
-        float max_range = (map_size_ / 2) * resolution_;
-        return (std::abs(dx) < max_range && std::abs(dy) < max_range);
+        return (std::abs(dx) < max_range_ && std::abs(dy) < max_range_);
     }
 
     inline int getIndexX(float x) const {
-        return std::clamp(static_cast<int>((x - origin_x_) / resolution_) + map_size_ / 2, 0, map_size_ - 1);
+        return std::clamp(static_cast<int>((x - origin_x_) * inv_resolution_) + map_half_size_, 0, map_size_ - 1);
     }
 
     inline int getIndexY(float y) const {
-        return std::clamp(static_cast<int>((y - origin_y_) / resolution_) + map_size_ / 2, 0, map_size_ - 1);
+        return std::clamp(static_cast<int>((y - origin_y_) * inv_resolution_) + map_half_size_, 0, map_size_ - 1);
     }
 
     bool checkCollisionFootprint(float x, float y, float theta) const {
-        auto pts = getFootprintPoints(x, y, theta);
+        const auto pts = getFootprintPoints(x, y, theta);
         for (const auto& pt : pts) {
             if (!isInside(pt.first, pt.second)) {
                 if (!is_tracking_unknown_) return true;
@@ -247,7 +251,7 @@ private:
         return false;
     }
 
-    std::vector<std::pair<float, float>> getFootprintPoints(float x, float y, float theta) const {
+    std::array<std::pair<float, float>, 5> getFootprintPoints(float x, float y, float theta) const {
         const std::array<std::pair<float, float>, 5> offsets = {{
             {0.0f, 0.0f},
             {l_half, w_half}, {l_half, -w_half},
@@ -257,12 +261,10 @@ private:
         float cos_t = std::cos(theta);
         float sin_t = std::sin(theta);
 
-        std::vector<std::pair<float, float>> pts;
-        pts.reserve(5);
-        for (const auto& opt : offsets) {
-            float gx = opt.first * cos_t - opt.second * sin_t + x;
-            float gy = opt.first * sin_t + opt.second * cos_t + y;
-            pts.push_back({gx, gy});
+        std::array<std::pair<float, float>, 5> pts;
+        for (size_t i = 0; i < 5; ++i) {
+            pts[i].first  = offsets[i].first * cos_t - offsets[i].second * sin_t + x;
+            pts[i].second = offsets[i].first * sin_t + offsets[i].second * cos_t + y;
         }
         return pts;
     }
@@ -272,13 +274,17 @@ private:
     }
 
 private:
-    std::mutex map_mutex_;
+    mutable std::shared_mutex map_mutex_;
 
     int map_size_;
     float resolution_;
     float origin_x_;
     float origin_y_;
     std::vector<uint8_t> grid_;
+
+    float inv_resolution_;
+    int map_half_size_;
+    float max_range_;
 
     geometry_msgs::msg::PoseStamped latest_pose_;
 
